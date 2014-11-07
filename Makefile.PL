@@ -4,9 +4,9 @@ use warnings FATAL => 'all';
 use inc::Module::Install;
 
 name     'Zonemaster-Distributed';
-all_from 'lib/Zonemaster/Distributed.pm';
 author   q{Calle Dybedahl <calle@init.se>};
 license  'perl';
+all_from 'lib/Zonemaster/Distributed.pm';
 
 perl_version 5.014002;
 
@@ -37,4 +37,5 @@ requires (
 );
 
 install_as_cpan;
+install_script 'script/zonemaster-distributed';
 WriteAll;
