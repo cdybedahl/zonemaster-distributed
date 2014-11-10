@@ -34,6 +34,7 @@ requires (
     'Digest::SHA' => 0,
     'Daemon::Control' => 0,
     'Log::Log4perl' => 0,
+    'Store::CouchDB' => 0,
 );
 
 install_as_cpan;
