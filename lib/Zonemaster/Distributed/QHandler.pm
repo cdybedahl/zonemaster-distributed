@@ -5,39 +5,28 @@ use warnings;
 
 use Moose;
 use Store::CouchDB;
-use Zonemaster::Distributed::Runner;
 use Sys::Hostname;
 use List::Util qw[shuffle];
 use Time::HiRes qw[time sleep];
 use Net::LibIDN qw[idn_to_ascii];
 use Log::Log4perl qw[:easy];
+use IO::Async::Loop;
+use Zonemaster::Distributed::Child
 
-has 'dbhost'   => ( is => 'ro', isa => 'Str',                             required   => 1 );
-has 'dbname'   => ( is => 'ro', isa => 'Str',                             required   => 1 );
-has 'dbuser'   => ( is => 'ro', isa => 'Str',                             required   => 0 );
-has 'dbpass'   => ( is => 'ro', isa => 'Str',                             required   => 0 );
-has 'limit'    => ( is => 'ro', isa => 'Int',                             default    => 10 );
-has 'runner'   => ( is => 'ro', isa => 'Zonemaster::Distributed::Runner', lazy_build => 1 );
-has 'db'       => ( is => 'ro', isa => 'Store::CouchDB',                  lazy_build => 1 );
-has 'nodename' => ( is => 'ro', isa => 'Str',                             default    => sub { hostname() } );
-has 'entries'  => ( is => 'ro', isa => 'HashRef',                         default    => sub { {} } );
+has 'dbhost'   => ( is => 'ro', isa => 'Str',             required   => 1 );
+has 'dbname'   => ( is => 'ro', isa => 'Str',             required   => 1 );
+has 'dbuser'   => ( is => 'ro', isa => 'Str',             required   => 0 );
+has 'dbpass'   => ( is => 'ro', isa => 'Str',             required   => 0 );
+has 'limit'    => ( is => 'ro', isa => 'Int',             default    => 10 );
+has 'db'       => ( is => 'ro', isa => 'Store::CouchDB',  lazy_build => 1 );
+has 'nodename' => ( is => 'ro', isa => 'Str',             default    => sub { hostname() } );
+has 'entries'  => ( is => 'ro', isa => 'HashRef',         default    => sub { {} } );
+has 'loop'     => ( is => 'ro', isa => 'IO::Async::Loop', default    => sub { IO::Async::Loop->new });
+has 'running'  => ( is => 'rw', isa => 'Bool',            default => 1);
 
 ###
 ### Builders
 ###
-
-sub _build_runner {
-    my ( $self ) = @_;
-
-    my %args;
-    $args{entry_cb}    = sub { $self->_log_entry( @_ ) };
-    $args{finished_cb} = sub { $self->_run_finished( @_ ) };
-    $args{limit}       = $self->limit;
-
-    my $r = Zonemaster::Distributed::Runner->new( \%args );
-
-    return $r;
-}
 
 sub _build_db {
     my ( $self ) = @_;
@@ -51,46 +40,6 @@ sub _build_db {
     my $db = Store::CouchDB->new( %args );
 
     return $db;
-}
-
-###
-### Callback targets
-###
-
-sub _log_entry {
-    my ( $self, $id, $e, ) = @_;
-
-    my $name = $self->entries->{$id}{name};
-    my $doc  = $self->db->get_doc( $id );
-    my %h    = (
-        timestamp => $e->timestamp,
-        tag       => $e->tag,
-        module    => $e->module,
-        level     => $e->level,
-        args      => $e->args,
-    );
-
-    # $doc->{results}[0]{scanner_pid} = $pid;
-    push @{ $doc->{results}[0]{messages} }, \%h;
-    $self->db->update_doc( { doc => $doc } );
-
-    return;
-}
-
-sub _run_finished {
-    my ( $self, $id, $err_ref ) = @_;
-
-    my $name = $self->entries->{$id}{name};
-    INFO "$name finished";
-    my $doc = $self->db->get_doc( $id );
-
-    # delete $doc->{results}[0]{scanner_pid};
-    $doc->{results}[0]{end_time} = time();
-    $doc->{results}[0]{stderr} = $$err_ref if $err_ref;
-    $self->db->update_doc( { doc => $doc } );
-
-    delete $self->entries->{$id};
-    return;
 }
 
 ###
@@ -134,80 +83,55 @@ sub claim_entry {
 sub start_running_entry {
     my ( $self, $entry ) = @_;
 
-    $self->entries->{ $entry->{_id} } = $entry;
-    $self->runner->start_child(
-        $entry,
-        sub {
-            my $r = $entry->{request};
-            if ( $r->{ds} ) {
-                INFO "Adding fake DS for " . $entry->{name};
-                Zonemaster->add_fake_ds( $entry->{name}, $r->{ds} );
-            }
-            if ( $r->{ns} ) {
-                INFO "Adding fake delegation for " . $entry->{name};
-                Zonemaster->add_fake_delegation( $entry->{name}, $r->{ns} );
-            }
-            if ( $r->{ipv4} ) {
-                INFO "Setting IPv4 flag for " . $entry->{name};
-                Zonemaster->config->ipv4_ok( $r->{ipv4} );
-            }
-            if ( $r->{ipv6} ) {
-                INFO "Setting IPv6 flag for " . $entry->{name};
-                Zonemaster->config->ipv6_ok( $r->{ipv6} );
-            }
+    my $new_pid = $self->loop->spawn_child(
+        code => sub {
+            Zonemaster::Distributed::Child->new($entry, $self->db);
         },
+        on_exit => sub {
+            my ( $exit_pid, $exit_code ) = @_;
+
+            if ($exit_code == 0) {
+                INFO "Child with PID $exit_pid exited normally.";
+            } else {
+                WARN "Child with PID $exit_pid exited with return code $exit_code.";
+            }
+
+            delete $self->entries->{$exit_pid};
+        }
     );
+    $self->entries->{$new_pid} = $entry;
+    INFO "Spawned child with PID $new_pid.";
 }
 
 sub check_for_conflicts {
     my ( $self ) = @_;
 
-    foreach my $id ( keys %{ $self->entries } ) {
-        my $name = $self->entries->{$id}{name};
-        my $doc  = $self->db->get_doc( $id );
+    foreach my $pid ( keys %{ $self->entries } ) {
+        my $name = $self->entries->{$pid}{name};
+        my $doc  = $self->db->get_doc( $self->entries->{$pid}{_id} );
         if ( $doc->{results}[0]{nodename} ne $self->nodename ) {
-            INFO "Conflict for $name ($id), killing it.";
-            $self->runner->terminate($id);
+            INFO "Conflict for $name ($pid), killing it.";
+            kill 'TERM', $pid;
         }
     }
 
     return;
 }
 
-sub loop_once {
+sub run_loop {
     my ( $self ) = @_;
 
-    my $r = $self->runner;
-    if ( $r->has_free_slot ) {
-        my $entry = $self->get_new_entry;
-        if ( $entry ) {
-            $self->claim_entry( $entry );
+    INFO "Looping.";
+    while ( $self->running ) {
+        $self->loop->loop_once(0.1);
+        $self->check_for_conflicts();
+        sleep(0.1);
+        if (scalar(keys %{$self->entries}) < $self->limit) {
+            my $new = $self->get_new_entry();
+            if ($new) {
+                $self->claim_entry($new);
+            }
         }
-    }
-
-    sleep( $r->delay );
-    $self->check_for_conflicts;
-    $r->process_once;
-
-    return;
-}
-
-sub loop_until_empty {
-    my ( $self ) = @_;
-
-    INFO "Looping until queue is empty";
-    my $r = $self->runner;
-    while ( $r->active_count > 0 ) {
-        $self->loop_once;
-    }
-}
-
-sub loop_forever {
-    my ( $self ) = @_;
-
-    INFO "Looping forever";
-    while ( 1 ) {
-        $self->loop_once;
     }
 }
 

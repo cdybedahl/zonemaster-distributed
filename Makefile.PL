@@ -26,7 +26,6 @@ build_requires (
 );
 
 requires (
-    'IPC::Run' => 0,
     'Moose' => 0,
     'Zonemaster' => '0.0.4',
     'Net::LibIDN' => 0,
@@ -35,6 +34,7 @@ requires (
     'Daemon::Control' => 0,
     'Log::Log4perl' => 0,
     'Store::CouchDB' => 0,
+    'IO::Async' => 0,
 );
 
 install_as_cpan;

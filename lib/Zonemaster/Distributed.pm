@@ -154,7 +154,7 @@ sub do_run {
         $dargs{pid_file} = $self->pid_file;
         $dargs{program}  = sub {
             my $qhandler = Zonemaster::Distributed::QHandler->new( \%args );
-            $qhandler->loop_forever;
+            $qhandler->run_loop;
         };
 
         INFO "Handing control to Daemon::Control.";
