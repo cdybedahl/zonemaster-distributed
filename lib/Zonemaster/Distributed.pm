@@ -17,7 +17,7 @@ has 'dbhost' => (
     is            => 'ro',
     isa           => 'Str',
     required      => 0,
-    default       => 'localhost',
+    default       => '127.0.0.1',
     documentation => 'Hostname (or IP address) of primary CouchDB server. Defaults to "localhost".'
 );
 has 'dbname' => (
