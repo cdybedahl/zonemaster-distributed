@@ -77,9 +77,16 @@ sub new {
     Zonemaster->test_zone($entry->{results}[0]{alabel});
 
     $entry->{results}[0]{end_time} = time();
-    $db->update_doc({ doc => $entry });
+    foreach my $count (1..10) {
+        eval {
+            $db->update_doc({ doc => $entry });
+            exit(0);
+        };
+        ERROR "Final update failed, sleeping " . $count*$count ." seconds and trying again.";
+        sleep $count*$count;
+    };
 
-    exit(0);
+    exit(1);
 }
 
 1;

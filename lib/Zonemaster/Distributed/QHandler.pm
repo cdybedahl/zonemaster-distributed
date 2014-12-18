@@ -109,7 +109,7 @@ sub check_for_conflicts {
     foreach my $pid ( keys %{ $self->entries } ) {
         my $name = $self->entries->{$pid}{name};
         my $doc  = $self->db->get_doc( $self->entries->{$pid}{_id} );
-        if ( $doc->{results}[0]{nodename} ne $self->nodename ) {
+        if ( defined($doc->{results}[0]{nodename}) and $doc->{results}[0]{nodename} ne $self->nodename ) {
             INFO "Conflict for $name ($pid), killing it.";
             kill 'TERM', $pid;
         }
